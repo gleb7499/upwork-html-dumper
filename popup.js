@@ -4,6 +4,7 @@ const statusEl = document.getElementById("status");
 const statusDot = document.getElementById("statusDot");
 const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
+const dumpBtn = document.getElementById("dumpBtn");
 
 function render(index, total) {
   progressEl.textContent = total > 0 ? `${index} / ${total}` : "- / -";
@@ -45,6 +46,20 @@ startBtn.addEventListener("click", () => {
 
 stopBtn.addEventListener("click", () => {
   chrome.runtime.sendMessage({ action: "stop" });
+});
+
+dumpBtn.addEventListener("click", () => {
+  dumpBtn.disabled = true;
+  setStatus("Dumping page...", "running");
+  chrome.runtime.sendMessage({ action: "dumpCurrent" }, (resp) => {
+    dumpBtn.disabled = false;
+    if (chrome.runtime.lastError || !resp || !resp.ok) {
+      const err = (resp && resp.error) || "Failed (not an Upwork page?)";
+      setStatus(err, "error");
+    } else {
+      setStatus("Page saved", "done");
+    }
+  });
 });
 
 chrome.runtime.onMessage.addListener((message) => {

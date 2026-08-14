@@ -119,6 +119,48 @@ async function downloadHtml(index, url, html) {
   return downloadId;
 }
 
+// Injected into the active tab by chrome.scripting for single-page dumps.
+// Must stay self-contained: no closures or imports from this file.
+async function scrollAndCapturePage() {
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  for (let i = 0; i < 3; i++) {
+    window.scrollTo(0, document.body.scrollHeight);
+    await sleep(2000);
+  }
+  await sleep(3000);
+  return document.documentElement.outerHTML;
+}
+
+function sanitizeFileName(s) {
+  const cleaned = String(s || "").replace(/[^\wа-яА-ЯёЁ -]/g, "").trim().replace(/[\s-]+/g, "_");
+  return cleaned || "page";
+}
+
+async function dumpActiveTab() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || !tab.url || !tab.url.startsWith("https://www.upwork.com/")) {
+    return { ok: false, error: "Active tab is not an Upwork page" };
+  }
+  const [result] = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: scrollAndCapturePage
+  });
+  const html = result && result.result;
+  if (!html) {
+    return { ok: false, error: "Could not capture page HTML" };
+  }
+  const keyword = new URL(tab.url).searchParams.get("q");
+  const name = sanitizeFileName(keyword || tab.title).slice(0, 80);
+  const dataUrl = "data:text/html;charset=utf-8," + encodeURIComponent(cleanHtml(html));
+  const downloadId = await chrome.downloads.download({
+    url: dataUrl,
+    filename: `${name}.html`,
+    saveAs: false
+  });
+  await chrome.storage.local.set({ lastDownloadId: downloadId });
+  return { ok: true };
+}
+
 function broadcast(message) {
   chrome.runtime.sendMessage(message).catch(() => {});
 }
@@ -237,6 +279,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     })();
     sendResponse({ ok: true });
     return;
+  }
+
+  if (message.action === "dumpCurrent") {
+    dumpActiveTab()
+      .then((result) => sendResponse(result))
+      .catch((e) => {
+        console.error("Dump current page failed:", e);
+        sendResponse({ ok: false, error: String(e) });
+      });
+    return true;
   }
 
   if (message.action === "htmlReady" && sender.tab && sender.tab.id === currentTabId) {

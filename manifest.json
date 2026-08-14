@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Upwork HTML Dumper",
   "version": "1.0",
-  "permissions": ["tabs", "activeTab", "downloads", "storage", "notifications"],
+  "permissions": ["tabs", "activeTab", "downloads", "storage", "notifications", "scripting"],
   "host_permissions": ["https://www.upwork.com/"],
   "background": {
     "service_worker": "background.js"

@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Upwork HTML Dumper",
+  "version": "1.0",
+  "permissions": ["tabs", "activeTab", "downloads", "storage", "notifications"],
+  "host_permissions": ["https://www.upwork.com/"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.upwork.com/nx/search/jobs/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["urls.json"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

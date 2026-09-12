@@ -26,6 +26,7 @@ public final class Main {
     private static final String DEFAULT_DB_DIR = ".upwork-parse-diff";
     private static final String DEFAULT_DB_NAME = "seen.bin";
     private static final String NEW_MD = "new.md";
+    private static final String REJECTED_MD = "rejected.md";
 
     public static void main(String[] args) {
         // Читаемый русский текст в консоли Windows: JEP 400 по умолчанию шлёт UTF-8,
@@ -180,7 +181,7 @@ public final class Main {
                 System.err.println("CRITICAL ERROR: не удалось записать new.md: " + e.getMessage());
                 return 2;
             }
-            printSummary(folder, db, ttlDays, files.size(), 0, 0, 0, uidMisses, errors, warnings);
+            printSummary(folder, db, ttlDays, files.size(), 0, 0, 0, 0, uidMisses, errors, warnings);
             return 3; // seen.bin намеренно НЕ трогаем
         }
 
@@ -200,6 +201,18 @@ public final class Main {
             }
         }
 
+        // ---- 5.5 автофильтр по жёстким правилам (только среди новых; в seen.bin
+        //         отсеянные уже записаны — они обработаны, просто не попадают в new.md) ----
+        List<JobTile> acceptedTiles = new ArrayList<>();
+        List<JobTile> rejectedTiles = new ArrayList<>();
+        for (JobTile tile : newTiles) {
+            if (RejectionFilter.isRejected(tile)) {
+                rejectedTiles.add(tile);
+            } else {
+                acceptedTiles.add(tile);
+            }
+        }
+
         // ---- 6. seen.bin с прунингом TTL (атомарно) ----
         try {
             SeenStore.save(db, seen, ttlDays, now);
@@ -210,9 +223,17 @@ public final class Main {
 
         // ---- 7. new.md (перезаписывается всегда) ----
         try {
-            writeNewMd(folder, newTiles);
+            writeNewMd(folder, acceptedTiles);
         } catch (IOException e) {
             System.err.println("CRITICAL ERROR: не удалось записать new.md: " + e.getMessage());
+            return 2;
+        }
+
+        // ---- 7.5 rejected.md (перезаписывается всегда) ----
+        try {
+            writeRejectedMd(folder, rejectedTiles);
+        } catch (IOException e) {
+            System.err.println("CRITICAL ERROR: не удалось записать rejected.md: " + e.getMessage());
             return 2;
         }
 
@@ -225,8 +246,8 @@ public final class Main {
                     uidMisses, totalTiles, 100.0 * uidMisses / totalTiles));
         }
 
-        printSummary(folder, db, ttlDays, files.size(), totalTiles, fresh, repeated,
-                uidMisses, errors, warnings);
+        printSummary(folder, db, ttlDays, files.size(), totalTiles, fresh, rejectedTiles.size(),
+                repeated, uidMisses, errors, warnings);
         return 0;
     }
 
@@ -236,6 +257,7 @@ public final class Main {
         String[] fixtures = {"/fixture-en.html", "/fixture-ru.html"};
         JobTileParser parser = new JobTileParser(System.currentTimeMillis());
         boolean allOk = true;
+        List<JobTile> fixtureTiles = new ArrayList<>();
         for (String name : fixtures) {
             String html;
             try (var in = Main.class.getResourceAsStream(name)) {
@@ -258,13 +280,67 @@ public final class Main {
                         + ", похоже на Upwork: " + result.looksLikeUpwork());
                 allOk = false;
             }
+            fixtureTiles.addAll(result.tiles());
         }
+        // Маркер подтверждения оплаты: в обеих фикстурах тайлы верифицированы —
+        // не распознался => Upwork сдвинул разметку, фильтр отсеивал бы всё подряд.
+        if (!fixtureTiles.isEmpty() && !fixtureTiles.stream().allMatch(JobTile::paymentVerified)) {
+            System.out.println("STRUCTURE BROKEN — маркер payment-verified не распознался в фикстуре");
+            allOk = false;
+        }
+        // Жёсткий автофильтр: синтетические тайлы, по каждому правилу и на пропуск.
+        allOk &= filterCheck("чистый заказ проходит",
+                tile(true, "hourly", "20-30", "5-10", "4.9"), false);
+        allOk &= filterCheck("оплата не подтверждена",
+                tile(false, "hourly", "20-30", "5-10", "4.9"), true);
+        allOk &= filterCheck("предложений 10-15 (верхняя граница > 14)",
+                tile(true, "fixed", "100", "10-15", "4.9"), true);
+        allOk &= filterCheck("предложений 5-10 проходят",
+                tile(true, "fixed", "100", "5-10", "4.9"), false);
+        allOk &= filterCheck("предложения не указаны — на ручную проверку",
+                tile(true, "hourly", "20-30", "", "4.9"), false);
+        allOk &= filterCheck("почасовая ставка 10-20 (min < 15)",
+                tile(true, "hourly", "10-20", "5-10", "4.9"), true);
+        allOk &= filterCheck("почасовой бюджет пуст — на ручную проверку",
+                tile(true, "hourly", "", "5-10", "4.9"), false);
+        allOk &= filterCheck("фикс 40 (< 50)",
+                tile(true, "fixed", "40", "5-10", "4.9"), true);
+        allOk &= filterCheck("фикс 500 проходит",
+                tile(true, "fixed", "500", "5-10", "4.9"), false);
+        allOk &= filterCheck("бюджет фикса пуст — на ручную проверку",
+                tile(true, "fixed", "", "5-10", "4.9"), false);
+        allOk &= filterCheck("рейтинг 4.0 (< 4.5)",
+                tile(true, "fixed", "100", "5-10", "4.0"), true);
+        allOk &= filterCheck("рейтинг пуст — на ручную проверку",
+                tile(true, "fixed", "100", "5-10", ""), false);
+        int reasonCount = RejectionFilter.rejectReasons(
+                tile(false, "fixed", "40", "20", "4.9")).size();
+        boolean multiOk = reasonCount == 3; // оплата + бюджет + предложения
+        System.out.println((multiOk ? "FILTER OK " : "FILTER BROKEN ")
+                + "несколько причин одной строкой — причин: " + reasonCount + ", ожидалось: 3");
+        allOk &= multiOk;
         if (!allOk) {
             System.out.println("STRUCTURE BROKEN — парсер требует починки");
             return 3;
         }
-        System.out.println("STRUCTURE OK — парсер жив (формат v" + UpworkSelectors.MARKUP_VERSION + ")");
+        System.out.println("STRUCTURE OK — парсер и автофильтр живы (формат v"
+                + UpworkSelectors.MARKUP_VERSION + ")");
         return 0;
+    }
+
+    private static boolean filterCheck(String name, JobTile tile, boolean expectRejected) {
+        boolean rejected = RejectionFilter.isRejected(tile);
+        boolean ok = rejected == expectRejected;
+        System.out.println((ok ? "FILTER OK " : "FILTER BROKEN ") + name
+                + " — отсеян: " + rejected + ", ожидалось: " + expectRejected);
+        return ok;
+    }
+
+    /** Минимальный тайл для проверок автофильтра: только поля, влияющие на правила. */
+    private static JobTile tile(boolean paymentVerified, String type, String budget,
+                                String proposals, String rating) {
+        return new JobTile("~0123456789", "t", "u", type, budget, proposals, rating, "",
+                paymentVerified, 0, "", "selftest");
     }
 
     // ================= выходные файлы =================
@@ -298,6 +374,36 @@ public final class Main {
         }
     }
 
+    private void writeRejectedMd(Path folder, List<JobTile> rejectedTiles) throws IOException {
+        List<JobTile> sorted = new ArrayList<>(rejectedTiles);
+        sorted.sort(Comparator.comparingLong(JobTile::postedMillis).reversed());
+        Path out = folder.resolve(REJECTED_MD);
+        try (PrintWriter w = new PrintWriter(Files.newBufferedWriter(out, StandardCharsets.UTF_8))) {
+            w.println("# Отсеянные заказы Upwork");
+            w.println();
+            w.println("| uid | title | url | type | budget | proposals | rating | spent | posted | query | reason |");
+            w.println("|-----|-------|-----|------|--------|-----------|--------|-------|--------|-------|--------|");
+            if (sorted.isEmpty()) {
+                w.println("| — | **нет отсеянных** | | | | | | | | | |");
+            } else {
+                for (JobTile t : sorted) {
+                    w.println("| " + md(t.uid())
+                            + " | " + md(t.title())
+                            + " | " + md(t.url())
+                            + " | " + md(t.type())
+                            + " | " + md(t.budget())
+                            + " | " + md(t.proposals())
+                            + " | " + md(t.rating())
+                            + " | " + md(t.spent())
+                            + " | " + md(t.postedText())
+                            + " | " + md(t.query())
+                            + " | " + md(String.join(", ", RejectionFilter.rejectReasons(t)))
+                            + " |");
+                }
+            }
+        }
+    }
+
     private void writeInvalidNewMd(Path folder) throws IOException {
         Path out = folder.resolve(NEW_MD);
         try (PrintWriter w = new PrintWriter(Files.newBufferedWriter(out, StandardCharsets.UTF_8))) {
@@ -311,7 +417,7 @@ public final class Main {
     // ================= утилиты =================
 
     private void printSummary(Path folder, Path db, long ttlDays,
-                              int files, int tiles, int fresh, int repeated,
+                              int files, int tiles, int fresh, int rejected, int repeated,
                               int uidMisses, int errors, List<String> warnings) {
         System.out.println("=== upwork-parse-diff · формат парсера v"
                 + UpworkSelectors.MARKUP_VERSION + " ===");
@@ -320,6 +426,7 @@ public final class Main {
         System.out.println("файлов       : " + files);
         System.out.println("тайлов       : " + tiles);
         System.out.println("новых        : " + fresh);
+        System.out.println("отсеяно      : " + rejected);
         System.out.println("повторных    : " + repeated);
         System.out.println("тайлов без uid: " + uidMisses);
         System.out.println("ошибок       : " + errors);

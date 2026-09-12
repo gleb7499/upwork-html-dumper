@@ -16,12 +16,14 @@ import java.util.regex.Pattern;
  *  - у части тайлов (EN, старый формат) proposals — отдельный <li>,
  *    у части (RU, новый формат) proposals — инлайн рядом с датой в заголовке;
  *  - почасовая вилка живёт в job-type-label ("Hourly: $10.00 - $20.00"),
- *    отдельного li с вилкой нет.
+ *    отдельного li с вилкой нет;
+ *  - li с data-test=payment-verified есть только у верифицированных клиентов:
+ *    маркер отсутствует = оплата НЕ подтверждена.
  */
 public final class UpworkSelectors {
 
     /** Версия привязки к разметке. Печатается в шапке каждого прогона. */
-    public static final int MARKUP_VERSION = 1;
+    public static final int MARKUP_VERSION = 2;
 
     private UpworkSelectors() {}
 
@@ -52,6 +54,8 @@ public final class UpworkSelectors {
     public static final String RATING_BLOCK = "[data-test=total-feedback]";
     public static final String SPENT_LI = "[data-test=total-spent]";
     public static final String PROPOSALS = "[data-test=proposals-tier]";
+    /** Оплата подтверждена: li есть только у верифицированных клиентов. */
+    public static final String PAYMENT_VERIFIED_LI = "[data-test=payment-verified]";
 
     // ---------- Текстовые якоря (видимые тексты, EN + RU) ----------
     /** Рейтинг: «Rating is 4.9 out of 5». */

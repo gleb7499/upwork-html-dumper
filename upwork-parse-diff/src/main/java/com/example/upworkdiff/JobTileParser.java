@@ -181,6 +181,9 @@ public final class JobTileParser {
             spent = firstMoney(clean(spentEl.text()));
         }
 
+        // --- оплата подтверждена: маркер li отсутствует = НЕ подтверждена ---
+        boolean paymentVerified = first(tileEl, UpworkSelectors.PAYMENT_VERIFIED_LI) != null;
+
         // --- posted ---
         long postedMillis = 0;
         String postedText = "";
@@ -196,7 +199,7 @@ public final class JobTileParser {
         }
 
         return new JobTile(uid, title, url, type, budget, proposals, rating, spent,
-                postedMillis, postedText, query);
+                paymentVerified, postedMillis, postedText, query);
     }
 
     private static Element first(Element root, String css) {

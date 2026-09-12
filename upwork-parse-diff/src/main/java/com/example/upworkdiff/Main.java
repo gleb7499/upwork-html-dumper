@@ -6,17 +6,29 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Stream;
 
 /**
  * upwork-parse-diff — офлайн-дифф поисковой выдачи Upwork.
  *
- * Прочитать папку с HTML-дампами, выдать ТОЛЬКО НОВЫЕ заказы (uid которых ещё
- * не было в seen.bin) в new.md рядом с дампами.
+ * Прочитать папку с HTML-дампами и обновить дашборд в РОДИТЕЛЬСКОЙ папке дампов:
+ *   new.md      — открытые заказы (прошли автофильтр, ждут решения);
+ *                 пользователь помечает ❌ (не интересно) / ✅ (откликнулся) —
+ *                 помеченные уходят в history.md и навсегда исчезают из new.md,
+ *                 даже если заказ снова попадётся в дампах;
+ *   history.md  — всё разрешённое вручную (❌/✅ + дата);
+ *   rejected.md — автоотсев текущего прогона (❌ проставляет парсер автоматически).
+ * Неразмеченные строки new.md переносятся между прогонами и дополняются
+ * подходящими заказами из новых дампов. Учёт «новых/повторных» — seen.bin.
  *
  * Exit codes: 0 — ок; 1 — неверные аргументы/папка; 2 — критическая ошибка записи;
  *             3 — структурная поломка парсера (разметка Upwork изменилась).
@@ -27,6 +39,11 @@ public final class Main {
     private static final String DEFAULT_DB_NAME = "seen.bin";
     private static final String NEW_MD = "new.md";
     private static final String REJECTED_MD = "rejected.md";
+    private static final String HISTORY_MD = "history.md";
+    private static final String PENDING_TSV = ".upwork-pending.tsv"; // скрытый снапшот открытых
+
+    private static final String MARK_REJECT = "❌"; // не интересно — в историю, не показывать
+    private static final String MARK_APPLIED = "✅"; // откликнулся — в историю, не показывать
 
     public static void main(String[] args) {
         // Читаемый русский текст в консоли Windows: JEP 400 по умолчанию шлёт UTF-8,
@@ -96,8 +113,17 @@ public final class Main {
         if (selftest) {
             return selftest();
         }
+
+        // Папка не указана → берём самую свежую подпапку дампов в текущей
+        // директории (имя вида yyyy-MM-dd_HH-mm, как называет их расширение).
         if (folderArg == null) {
-            return usage("не указана папка с дампами");
+            folderArg = latestDumpDir(Path.of("").toAbsolutePath());
+            if (folderArg == null) {
+                System.err.println("ERROR: папка не указана и в текущей директории нет "
+                        + "подпапок дампов вида yyyy-MM-dd_HH-mm");
+                return 1;
+            }
+            System.out.println("папка дампов (авто): " + folderArg);
         }
 
         Path folder = Path.of(folderArg);
@@ -176,12 +202,12 @@ public final class Main {
             System.err.println(message);
             warnings.add(0, message);
             try {
-                writeInvalidNewMd(folder);
+                writeInvalidNewMd(dashboardDir(folder));
             } catch (IOException e) {
                 System.err.println("CRITICAL ERROR: не удалось записать new.md: " + e.getMessage());
                 return 2;
             }
-            printSummary(folder, db, ttlDays, files.size(), 0, 0, 0, 0, uidMisses, errors, warnings);
+            printSummary(folder, dashboardDir(folder), db, ttlDays, files.size(), 0, 0, 0, 0, uidMisses, errors, 0, 0, warnings);
             return 3; // seen.bin намеренно НЕ трогаем
         }
 
@@ -201,15 +227,55 @@ public final class Main {
             }
         }
 
-        // ---- 5.5 автофильтр по жёстким правилам (только среди новых; в seen.bin
-        //         отсеянные уже записаны — они обработаны, просто не попадают в new.md) ----
+        // ---- 5.5 автофильтр по жёстким правилам (применяется ко ВСЕМ тайлам прогона) ----
         List<JobTile> acceptedTiles = new ArrayList<>();
         List<JobTile> rejectedTiles = new ArrayList<>();
-        for (JobTile tile : newTiles) {
+        for (JobTile tile : allTiles) {
             if (RejectionFilter.isRejected(tile)) {
                 rejectedTiles.add(tile);
             } else {
                 acceptedTiles.add(tile);
+            }
+        }
+
+        Path outDir = dashboardDir(folder);
+
+        // ---- 5.6 рабочее состояние дашборда: пометки из прошлого new.md + история ----
+        //         ❌/✅ в любой ячейке строки = заказ разрешён: уходит в history.md
+        //         и больше НИКОГДА не появляется в new.md, даже если есть в дампах.
+        //         Неразмеченные строки остаются открытыми и переносятся дальше.
+        Map<String, JobTile> pending = loadPending(outDir.resolve(PENDING_TSV));
+        List<MarkedRow> prevRows = parseMarkedRows(outDir.resolve(NEW_MD));
+        List<HistoryRow> resolved = loadHistory(outDir.resolve(HISTORY_MD));
+        Set<String> resolvedUids = new HashSet<>();
+        for (HistoryRow h : resolved) {
+            resolvedUids.add(h.tile().uid());
+        }
+        Map<String, JobTile> openTiles = new LinkedHashMap<>();
+        String today = java.time.LocalDate.now().toString();
+        for (MarkedRow row : prevRows) {
+            JobTile tile = pending.containsKey(row.tile().uid()) ? pending.get(row.tile().uid()) : row.tile();
+            if (row.mark() == null) {
+                openTiles.putIfAbsent(tile.uid(), tile);
+            } else {
+                if (resolvedUids.add(tile.uid())) {
+                    resolved.add(0, new HistoryRow(row.mark(), tile, today));
+                }
+            }
+        }
+
+        // ---- 5.7 слияние: открытые из прошлого new.md + подходящие из текущих дампов ----
+        int addedFresh = 0;
+        for (JobTile tile : acceptedTiles) {
+            if (resolvedUids.contains(tile.uid())) {
+                continue; // разрешён раньше (❌/✅) — не показывать никогда
+            }
+            JobTile prev = openTiles.get(tile.uid());
+            if (prev == null) {
+                openTiles.put(tile.uid(), tile);
+                addedFresh++;
+            } else if (tile.postedMillis() > prev.postedMillis()) {
+                openTiles.put(tile.uid(), tile); // свежее представление того же заказа
             }
         }
 
@@ -221,19 +287,35 @@ public final class Main {
             return 2;
         }
 
-        // ---- 7. new.md (перезаписывается всегда) ----
+        // ---- 7. new.md — открытые заказы (mark пустой, ждёт ❌/✅) ----
         try {
-            writeNewMd(folder, acceptedTiles);
+            writeNewMd(outDir, openTiles.values());
         } catch (IOException e) {
             System.err.println("CRITICAL ERROR: не удалось записать new.md: " + e.getMessage());
             return 2;
         }
 
-        // ---- 7.5 rejected.md (перезаписывается всегда) ----
+        // ---- 7.4 history.md — всё разрешённое (❌ отклонено / ✅ откликнуто) ----
         try {
-            writeRejectedMd(folder, rejectedTiles);
+            writeHistoryMd(outDir, resolved);
+        } catch (IOException e) {
+            System.err.println("CRITICAL ERROR: не удалось записать history.md: " + e.getMessage());
+            return 2;
+        }
+
+        // ---- 7.5 rejected.md — автоотсев текущего прогона (❌ проставляет парсер) ----
+        try {
+            writeRejectedMd(outDir, rejectedTiles);
         } catch (IOException e) {
             System.err.println("CRITICAL ERROR: не удалось записать rejected.md: " + e.getMessage());
+            return 2;
+        }
+
+        // ---- 7.6 снапшот открытых для переноса пометок и сортировки ----
+        try {
+            savePending(outDir.resolve(PENDING_TSV), openTiles.values());
+        } catch (IOException e) {
+            System.err.println("CRITICAL ERROR: не удалось записать " + PENDING_TSV + ": " + e.getMessage());
             return 2;
         }
 
@@ -246,8 +328,8 @@ public final class Main {
                     uidMisses, totalTiles, 100.0 * uidMisses / totalTiles));
         }
 
-        printSummary(folder, db, ttlDays, files.size(), totalTiles, fresh, rejectedTiles.size(),
-                repeated, uidMisses, errors, warnings);
+        printSummary(folder, outDir, db, ttlDays, files.size(), totalTiles, fresh, rejectedTiles.size(),
+                repeated, uidMisses, errors, openTiles.size(), addedFresh, warnings);
         return 0;
     }
 
@@ -345,58 +427,88 @@ public final class Main {
 
     // ================= выходные файлы =================
 
-    private void writeNewMd(Path folder, List<JobTile> newTiles) throws IOException {
-        List<JobTile> sorted = new ArrayList<>(newTiles);
+    /** Дашборд пишется в родительскую папку дампов (единая точка просмотра). */
+    private static Path dashboardDir(Path dumpFolder) {
+        Path parent = dumpFolder.toAbsolutePath().getParent();
+        return parent != null ? parent : dumpFolder;
+    }
+
+    private void writeNewMd(Path outDir, Collection<JobTile> tiles) throws IOException {
+        List<JobTile> sorted = new ArrayList<>(tiles);
         sorted.sort(Comparator.comparingLong(JobTile::postedMillis).reversed());
-        Path out = folder.resolve(NEW_MD);
+        Path out = outDir.resolve(NEW_MD);
         try (PrintWriter w = new PrintWriter(Files.newBufferedWriter(out, StandardCharsets.UTF_8))) {
-            w.println("# Новые заказы Upwork");
+            w.println("# Заказы Upwork — открытые (требуют решения)");
             w.println();
-            w.println("| uid | title | url | type | budget | proposals | rating | spent | posted | query |");
-            w.println("|-----|-------|-----|------|--------|-----------|--------|-------|--------|-------|");
+            w.println("Обновлено: " + java.time.LocalDateTime.now()
+                    .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")));
+            w.println();
+            w.println("Пометка в первой колонке: " + MARK_REJECT + " — не интересно, "
+                    + MARK_APPLIED + " — откликнулся. Помеченные уходят в history.md "
+                    + "и больше не появляются здесь.");
+            w.println();
+            w.println("| mark | uid | title | url | type | budget | proposals | rating | spent | posted | query |");
+            w.println("|------|-----|-------|-----|------|--------|-----------|--------|-------|--------|-------|");
             if (sorted.isEmpty()) {
-                w.println("| — | **новых заказов нет** | | | | | | | | |");
+                w.println("| | — | **открытых заказов нет** | | | | | | | | |");
             } else {
                 for (JobTile t : sorted) {
-                    w.println("| " + md(t.uid())
-                            + " | " + md(t.title())
-                            + " | " + md(t.url())
-                            + " | " + md(t.type())
-                            + " | " + md(t.budget())
-                            + " | " + md(t.proposals())
-                            + " | " + md(t.rating())
-                            + " | " + md(t.spent())
-                            + " | " + md(t.postedText())
-                            + " | " + md(t.query())
-                            + " |");
+                    w.println("|  | " + rowCells(t) + " |");
                 }
             }
         }
     }
 
-    private void writeRejectedMd(Path folder, List<JobTile> rejectedTiles) throws IOException {
+    private void writeHistoryMd(Path outDir, List<HistoryRow> rows) throws IOException {
+        Path out = outDir.resolve(HISTORY_MD);
+        try (PrintWriter w = new PrintWriter(Files.newBufferedWriter(out, StandardCharsets.UTF_8))) {
+            w.println("# История — разрешённые заказы");
+            w.println();
+            w.println(MARK_REJECT + " — отклонено вручную · " + MARK_APPLIED + " — откликнуто");
+            w.println();
+            w.println("| mark | uid | title | url | type | budget | proposals | rating | spent | posted | query | resolved |");
+            w.println("|------|-----|-------|-----|------|--------|-----------|--------|-------|--------|-------|----------|");
+            if (rows.isEmpty()) {
+                w.println("| | — | **история пуста** | | | | | | | | | |");
+            } else {
+                for (HistoryRow h : rows) {
+                    w.println("| " + h.mark() + " | " + rowCells(h.tile()) + " | " + md(h.resolved()) + " |");
+                }
+            }
+        }
+    }
+
+    /** Общие колонки uid..query — порядок должен совпадать с parseMarkedRows/loadHistory. */
+    private static String rowCells(JobTile t) {
+        return md(t.uid())
+                + " | " + md(t.title())
+                + " | " + md(t.url())
+                + " | " + md(t.type())
+                + " | " + md(t.budget())
+                + " | " + md(t.proposals())
+                + " | " + md(t.rating())
+                + " | " + md(t.spent())
+                + " | " + md(t.postedText())
+                + " | " + md(t.query());
+    }
+
+    private void writeRejectedMd(Path outDir, List<JobTile> rejectedTiles) throws IOException {
         List<JobTile> sorted = new ArrayList<>(rejectedTiles);
         sorted.sort(Comparator.comparingLong(JobTile::postedMillis).reversed());
-        Path out = folder.resolve(REJECTED_MD);
+        Path out = outDir.resolve(REJECTED_MD);
         try (PrintWriter w = new PrintWriter(Files.newBufferedWriter(out, StandardCharsets.UTF_8))) {
-            w.println("# Отсеянные заказы Upwork");
+            w.println("# Отсеянные автофильтром — актуальный прогон");
             w.println();
-            w.println("| uid | title | url | type | budget | proposals | rating | spent | posted | query | reason |");
-            w.println("|-----|-------|-----|------|--------|-----------|--------|-------|--------|-------|--------|");
+            w.println("Парсер отсеял по жёстким правилам (" + MARK_REJECT + " проставлен автоматически). "
+                    + "Сюда можно не заглядывать.");
+            w.println();
+            w.println("| mark | uid | title | url | type | budget | proposals | rating | spent | posted | query | reason |");
+            w.println("|------|-----|-------|-----|------|--------|-----------|--------|-------|--------|-------|--------|");
             if (sorted.isEmpty()) {
-                w.println("| — | **нет отсеянных** | | | | | | | | | |");
+                w.println("| | — | **нет отсеянных** | | | | | | | | | |");
             } else {
                 for (JobTile t : sorted) {
-                    w.println("| " + md(t.uid())
-                            + " | " + md(t.title())
-                            + " | " + md(t.url())
-                            + " | " + md(t.type())
-                            + " | " + md(t.budget())
-                            + " | " + md(t.proposals())
-                            + " | " + md(t.rating())
-                            + " | " + md(t.spent())
-                            + " | " + md(t.postedText())
-                            + " | " + md(t.query())
+                    w.println("| " + MARK_REJECT + " | " + rowCells(t)
                             + " | " + md(String.join(", ", RejectionFilter.rejectReasons(t)))
                             + " |");
                 }
@@ -404,24 +516,163 @@ public final class Main {
         }
     }
 
-    private void writeInvalidNewMd(Path folder) throws IOException {
-        Path out = folder.resolve(NEW_MD);
+    private void writeInvalidNewMd(Path outDir) throws IOException {
+        Path out = outDir.resolve(NEW_MD);
         try (PrintWriter w = new PrintWriter(Files.newBufferedWriter(out, StandardCharsets.UTF_8))) {
-            w.println("# Новые заказы Upwork");
+            w.println("# Заказы Upwork — актуальная выборка");
             w.println();
             w.println("ПРОГОН НЕВАЛИДЕН: парсер не нашёл тайлов — вероятно, Upwork сменил разметку.");
             w.println("Это НЕ означает «новых заказов нет». seen.bin не изменён.");
         }
     }
 
+    // ================= рабочее состояние дашборда =================
+
+    private record MarkedRow(String mark, JobTile tile, String resolved) {}
+
+    private record HistoryRow(String mark, JobTile tile, String resolved) {}
+
+    /**
+     * Разобрать markdown-таблицу (new.md / history.md): mark (null / ❌ / ✅), тайл,
+     * дата resolution (для history.md). Пометка ищется по всем ячейкам — пользователь
+     * может поставить ❌ в любую. Файла нет / пустой — пустой список.
+     */
+    private static List<MarkedRow> parseMarkedRows(Path mdFile) {
+        List<MarkedRow> rows = new ArrayList<>();
+        if (!Files.isRegularFile(mdFile)) {
+            return rows;
+        }
+        try {
+            for (String line : Files.readAllLines(mdFile, StandardCharsets.UTF_8)) {
+                String trimmed = line.trim();
+                if (!trimmed.startsWith("|") || trimmed.contains("---")) {
+                    continue;
+                }
+                String[] cells = Arrays.stream(trimmed.split("\\|", -1))
+                        .map(String::trim)
+                        .toArray(String[]::new);
+                // cells[0] и cells[last] пустые (края таблицы); данных в new.md 11 ячеек,
+                // в history.md — 12 (последняя — resolved).
+                if (cells.length - 2 < 11 || cells[2].equals("uid")) {
+                    continue; // шапка/разделитель/не таблица
+                }
+                String mark = null;
+                for (String c : cells) {
+                    if (c.contains(MARK_REJECT)) {
+                        mark = MARK_REJECT;
+                        break;
+                    }
+                    if (c.contains(MARK_APPLIED)) {
+                        mark = MARK_APPLIED;
+                        break;
+                    }
+                }
+                JobTile tile = new JobTile(
+                        unmd(cells[2]), unmd(cells[3]), unmd(cells[4]), unmd(cells[5]),
+                        unmd(cells[6]), unmd(cells[7]), unmd(cells[8]), unmd(cells[9]),
+                        true, 0, unmd(cells[10]), unmd(cells[11]));
+                if (tile.uid().equals("—")) {
+                    continue; // заглушка «пусто»
+                }
+                String resolved = cells.length - 2 >= 12 ? unmd(cells[12]) : "";
+                rows.add(new MarkedRow(mark, tile, resolved));
+            }
+        } catch (IOException e) {
+            System.err.println("WARNING: не удалось прочитать " + mdFile.getFileName()
+                    + " (" + e.getMessage() + ") — пометки потеряны");
+        }
+        return rows;
+    }
+
+    private static List<HistoryRow> loadHistory(Path historyFile) {
+        List<HistoryRow> rows = new ArrayList<>();
+        for (MarkedRow r : parseMarkedRows(historyFile)) {
+            rows.add(new HistoryRow(
+                    r.mark() != null ? r.mark() : MARK_REJECT, r.tile(), r.resolved()));
+        }
+        return rows;
+    }
+
+    /** Скрытый снапшот открытых заказов: uid + epoch + поля (для сортировки и переноса). */
+    private static Map<String, JobTile> loadPending(Path tsv) {
+        Map<String, JobTile> map = new LinkedHashMap<>();
+        if (!Files.isRegularFile(tsv)) {
+            return map;
+        }
+        try {
+            for (String line : Files.readAllLines(tsv, StandardCharsets.UTF_8)) {
+                String[] c = line.split("\t", -1);
+                if (c.length < 12) {
+                    continue;
+                }
+                long epoch = 0;
+                try {
+                    epoch = Long.parseLong(c[1]);
+                } catch (NumberFormatException ignored) {
+                    // остаётся 0
+                }
+                map.put(c[0], new JobTile(c[0], unesc(c[2]), unesc(c[3]), unesc(c[4]), unesc(c[5]),
+                        unesc(c[6]), unesc(c[7]), unesc(c[8]), true, epoch, unesc(c[10]), unesc(c[11])));
+            }
+        } catch (IOException e) {
+            System.err.println("WARNING: не удалось прочитать " + tsv.getFileName()
+                    + " — сортировка открытых по дате сброшена");
+        }
+        return map;
+    }
+
+    private static void savePending(Path tsv, Collection<JobTile> tiles) throws IOException {
+        List<JobTile> sorted = new ArrayList<>(tiles);
+        sorted.sort(Comparator.comparingLong(JobTile::postedMillis).reversed());
+        StringBuilder sb = new StringBuilder();
+        for (JobTile t : sorted) {
+            sb.append(t.uid()).append('\t').append(t.postedMillis());
+            for (String f : new String[]{t.title(), t.url(), t.type(), t.budget(), t.proposals(),
+                    t.rating(), t.spent(), "", t.postedText(), t.query()}) {
+                sb.append('\t').append(esc(f));
+            }
+            sb.append('\n');
+        }
+        Files.writeString(tsv, sb.toString(), StandardCharsets.UTF_8);
+    }
+
+    private static String esc(String s) {
+        return s.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n").replace("\r", "\\r");
+    }
+
+    private static String unesc(String s) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            if (s.charAt(i) == '\\' && i + 1 < s.length()) {
+                char n = s.charAt(++i);
+                sb.append(switch (n) {
+                    case 't' -> '\t';
+                    case 'n' -> '\n';
+                    case 'r' -> '\r';
+                    default -> n;
+                });
+            } else {
+                sb.append(s.charAt(i));
+            }
+        }
+        return sb.toString();
+    }
+
+    private static String unmd(String s) {
+        return s.replace("\\|", "|");
+    }
+
     // ================= утилиты =================
 
-    private void printSummary(Path folder, Path db, long ttlDays,
+    private void printSummary(Path folder, Path outDir, Path db, long ttlDays,
                               int files, int tiles, int fresh, int rejected, int repeated,
-                              int uidMisses, int errors, List<String> warnings) {
+                              int uidMisses, int errors, int open, int addedFresh,
+                              List<String> warnings) {
         System.out.println("=== upwork-parse-diff · формат парсера v"
                 + UpworkSelectors.MARKUP_VERSION + " ===");
         System.out.println("папка дампов : " + folder.toAbsolutePath());
+        System.out.println("дашборд      : " + outDir.toAbsolutePath()
+                + " (" + NEW_MD + ", " + REJECTED_MD + ", " + HISTORY_MD + ")");
         System.out.println("seen.bin     : " + db.toAbsolutePath() + " (TTL " + ttlDays + " дн.)");
         System.out.println("файлов       : " + files);
         System.out.println("тайлов       : " + tiles);
@@ -430,6 +681,7 @@ public final class Main {
         System.out.println("повторных    : " + repeated);
         System.out.println("тайлов без uid: " + uidMisses);
         System.out.println("ошибок       : " + errors);
+        System.out.println("открыто в new.md: " + open + " (+" + addedFresh + " из этого прогона)");
         if (!warnings.isEmpty()) {
             System.out.println("предупреждения:");
             for (String warning : warnings) {
@@ -440,8 +692,27 @@ public final class Main {
 
     private int usage(String message) {
         System.err.println("ERROR: " + message);
-        System.err.println("Использование: upwork-parse-diff <папка с дампами> [--ttl-days N] [--db путь\\seen.bin] [--selftest]");
+        System.err.println("Использование: upwork-parse-diff [папка с дампами] [--ttl-days N] [--db путь\\seen.bin] [--selftest]");
+        System.err.println("  папка не указана → берётся самая свежая подпапка вида yyyy-MM-dd_HH-mm в текущей директории");
         return 1;
+    }
+
+    /**
+     * Самая свежая подпапка дампов в base (имя вида yyyy-MM-dd_HH-mm — лексикографический
+     * порядок совпадает с хронологическим благодаря нулям). null — таких нет.
+     */
+    private static String latestDumpDir(Path base) {
+        try (Stream<Path> walk = Files.list(base)) {
+            return walk.filter(Files::isDirectory)
+                    .map(p -> p.getFileName().toString())
+                    .filter(n -> n.matches("\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}.*"))
+                    .sorted(Comparator.reverseOrder())
+                    .findFirst()
+                    .map(n -> base.resolve(n).toString())
+                    .orElse(null);
+        } catch (IOException e) {
+            return null;
+        }
     }
 
     /** cmd передаёт кавычки в %* дословно — снимаем одну внешнюю пару, если она есть. */

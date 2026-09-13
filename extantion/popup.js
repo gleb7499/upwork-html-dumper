@@ -73,6 +73,9 @@ chrome.runtime.onMessage.addListener((message) => {
   } else if (message.action === "stopped") {
     setRunning(false);
     setStatus("Stopped", "error");
+  } else if (message.action === "error") {
+    setRunning(false);
+    setStatus(`Ошибка: ${message.error}`, "error");
   }
 });
 

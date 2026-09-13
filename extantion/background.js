@@ -8,10 +8,21 @@ let running = false;
 
 function extractKeyword(url) {
   try {
-    const q = new URL(url).searchParams.get("q");
+    const u = new URL(url);
+    const q = u.searchParams.get("q");
     if (q) {
       const keyword = q.replace(/[^\wа-яА-ЯёЁ -]/g, "").trim().replace(/[\s-]+/g, "_");
       if (keyword) return keyword;
+    }
+    const m = u.pathname.match(/^\/jobs\/([^/]+)/);
+    if (m) {
+      const slug = decodeURIComponent(m[1])
+        .replace(/<[^>]*>/g, "")
+        .replace(/[^\wа-яА-ЯёЁ -]/g, "")
+        .trim()
+        .replace(/[\s-]+/g, "_")
+        .slice(0, 80);
+      if (slug) return slug;
     }
   } catch (e) {}
   return "page";
@@ -216,9 +227,26 @@ async function processNext() {
 
   tabTimeout = setTimeout(async () => {
     console.error(`Timeout: tab did not respond in ${TAB_TIMEOUT_MS / 1000}s, url: ${url}`);
-    await finishTab(tab.id);
-    await advance(urls.length, index, true);
+    await failRun(`Таймаут: вкладка не ответила за ${TAB_TIMEOUT_MS / 1000}с`, url);
   }, TAB_TIMEOUT_MS);
+}
+
+async function failRun(reason, url) {
+  running = false;
+  if (tabTimeout) { clearTimeout(tabTimeout); tabTimeout = null; }
+  if (delayTimeout) { clearTimeout(delayTimeout); delayTimeout = null; }
+  if (currentTabId) {
+    try { await chrome.tabs.remove(currentTabId); } catch (e) {}
+    currentTabId = null;
+  }
+  await chrome.storage.local.set({ running: false });
+  broadcast({ action: "error", error: reason, url });
+  chrome.notifications.create("dump-error", {
+    type: "basic",
+    iconUrl: "icons/icon128.png",
+    title: "Upwork HTML Dumper — ошибка",
+    message: `Процесс прерван: ${reason}${url ? ". URL: " + url : ""}`
+  });
 }
 
 async function advance(total, index, wasError) {
@@ -289,6 +317,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: false, error: String(e) });
       });
     return true;
+  }
+
+  if (message.action === "pageError" && sender.tab && sender.tab.id === currentTabId) {
+    (async () => {
+      const state = await chrome.storage.local.get(["urls", "index"]);
+      const urls = state.urls || [];
+      const index = state.index || 0;
+      await failRun(message.error || "Неизвестная ошибка страницы", urls[index]);
+    })();
+    return;
   }
 
   if (message.action === "htmlReady" && sender.tab && sender.tab.id === currentTabId) {

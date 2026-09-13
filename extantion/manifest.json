@@ -9,7 +9,10 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://www.upwork.com/nx/search/jobs/*"],
+      "matches": [
+        "https://www.upwork.com/nx/search/jobs/*",
+        "https://www.upwork.com/jobs/*"
+      ],
       "js": ["content.js"],
       "run_at": "document_idle"
     }

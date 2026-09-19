@@ -15,7 +15,7 @@ public final class RejectionFilter {
     private static final double MAX_PROPOSALS_UPPER = 14;
     private static final double MIN_HOURLY_RATE = 15;
     private static final double MIN_FIXED_BUDGET = 50;
-    private static final double MIN_RATING = 4.5;
+    private static final double MIN_RATING = 4.0;
 
     private RejectionFilter() {}
 
@@ -37,7 +37,7 @@ public final class RejectionFilter {
             reasons.add("бюджет < 50");
         }
         if (!t.rating().isEmpty() && parseDouble(t.rating()) < MIN_RATING) {
-            reasons.add("рейтинг < 4.5");
+            reasons.add("рейтинг < 4");
         }
         return reasons;
     }

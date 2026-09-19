@@ -397,8 +397,10 @@ public final class Main {
                 tile(true, "fixed", "500", "5-10", "4.9"), false);
         allOk &= filterCheck("бюджет фикса пуст — на ручную проверку",
                 tile(true, "fixed", "", "5-10", "4.9"), false);
-        allOk &= filterCheck("рейтинг 4.0 (< 4.5)",
-                tile(true, "fixed", "100", "5-10", "4.0"), true);
+        allOk &= filterCheck("рейтинг 3.9 (< 4)",
+                tile(true, "fixed", "100", "5-10", "3.9"), true);
+        allOk &= filterCheck("рейтинг 4.0 проходит",
+                tile(true, "fixed", "100", "5-10", "4.0"), false);
         allOk &= filterCheck("рейтинг пуст — на ручную проверку",
                 tile(true, "fixed", "100", "5-10", ""), false);
         int reasonCount = RejectionFilter.rejectReasons(

@@ -1,56 +1,56 @@
 # ParserUpwork
 
-Конвейер отбора заказов Upwork: поисковые URL → дампы страниц → парсер с жёстким автофильтром → ручной просмотр выживших.
+Pipeline for selecting Upwork jobs: search URLs → page dumps → parser with a hard auto-filter → manual review of survivors.
 
-## Как это работает
+## How it works
 
-1. **`extantion/`** — браузерное расширение (Chrome MV3, «Upwork HTML Dumper»).
-   Открывает поисковые выдачи по списку URL из `urls.json` и сохраняет HTML-дампы страниц в папку.
-2. **`upwork-parse-diff/`** — офлайн-парсер (Java 21, jsoup; без сети и БД).
-   Читает папку с дампами и выдаёт **только новые** заказы (дедуп по uid через глобальный `seen.bin`):
-   - `new.md` — заказы на ручной просмотр;
-   - `rejected.md` — заказы, отсеянные жёстким автофильтром (с колонкой `reason`).
-3. **Ручной просмотр** `new.md` по правилам из `rules/` — то, что скрипт проверить не может.
+1. **`extantion/`** — browser extension (Chrome MV3, "Upwork HTML Dumper").
+   Opens search result pages from the URL list in `urls.json` and saves HTML dumps to a folder.
+2. **`upwork-parse-diff/`** — offline parser (Java 21, jsoup; no network, no database).
+   Reads a folder of dumps and outputs **only new** jobs (dedup by uid via a global `seen.bin`):
+   - `new.md` — jobs for manual review;
+   - `rejected.md` — jobs rejected by the hard auto-filter (with a `reason` column).
+3. **Manual review** of `new.md` against the rules in `rules/` — what the script cannot check.
 
-Собранный парсер лежит в `upwork-parse-dist/` (fat jar + bat-обёртка). Сборка/обновление: `bash upwork-parse-dist/build.sh`. Проверка: `upwork-parse-diff --selftest` → `STRUCTURE OK`.
+The packaged parser lives in `upwork-parse-dist/` (fat jar + bat wrapper). Build/update: `bash upwork-parse-dist/build.sh`. Verify: `upwork-parse-diff --selftest` → `STRUCTURE OK`.
 
-## rules/ — единый источник правды
+## rules/ — single source of truth
 
-| Файл | Что внутри |
+| File | Contents |
 | --- | --- |
-| `список_ниш.md` | 14 ниш (блоки A: Java/Spring, B: Android/Kotlin, C: scraping/automation) и поисковые запросы `q` (строгие/широкие) |
-| `синтаксис_запросов.md` | Как устроен `q` на Upwork: AND/OR/NOT, кавычки, скобки, кодировка в URL |
-| `правила_отбора.md` | Все правила отбора: уровень «Фильтр» (кодируется в URL/скрипте) и «Ручной просмотр» |
+| `список_ниш.md` | 14 niches (blocks A: Java/Spring, B: Android/Kotlin, C: scraping/automation) and search queries `q` (strict/broad) |
+| `синтаксис_запросов.md` | How `q` works on Upwork: AND/OR/NOT, quotes, parentheses, URL encoding |
+| `правила_отбора.md` | All selection rules: "Filter" level (encoded in URLs/script) and "Manual review" level |
 
-### Разделение правил
+### Rule separation
 
-**Автофильтр** (URL `urls.json` + парсер) — отсев заказов «сразу НЕТ».
-**Ручной просмотр** — всё остальное из `rules/правила_отбора.md` (то, что скрипт проверить не может).
+**Auto-filter** (URLs in `urls.json` + parser) — rejects "obviously NO" jobs.
+**Manual review** — everything else from `rules/правила_отбора.md` (what the script cannot check).
 
-Конкретные значения и правила — только в `rules/правила_отбора.md`, там же уровень применения каждого («Фильтр» / «Ручной просмотр»).
+Concrete values and rules live only in `rules/правила_отбора.md`, along with the application level of each ("Filter" / "Manual review").
 
-## Структура
+## Structure
 
 ```
-├── extantion/          # расширение Chrome: дамп выдач Upwork по urls.json
-├── rules/              # ниши, синтаксис запросов, правила отбора
-├── upwork-parse-diff/  # исходники парсера (Maven, Java 21)
-└── upwork-parse-dist/  # собранный дистрибутив парсера (jar + bat + build.sh)
+├── extantion/          # Chrome extension: dumps Upwork search results per urls.json
+├── rules/              # niches, query syntax, selection rules
+├── upwork-parse-diff/  # parser sources (Maven, Java 21)
+└── upwork-parse-dist/  # packaged parser distribution (jar + bat + build.sh)
 ```
 
-## Использование
+## Usage
 
 ```bash
-# 1. Обновить поисковые URL при изменении rules/
-#    (вручную или скриптом по список_ниш.md + правила_отбора.md)
+# 1. Update search URLs when rules/ change
+#    (manually or via a script from список_ниш.md + правила_отбора.md)
 
-# 2. Расширением сохранить свежие дампы выдач в папку, например:
+# 2. Use the extension to save fresh search dumps to a folder, e.g.:
 #    C:\...\Страницы\2026-09-12_10-00\
 
-# 3. Прогнать парсер
+# 3. Run the parser
 upwork-parse-diff "C:\...\Страницы\2026-09-12_10-00"
 
-# 4. Смотреть new.md, отсеянные — rejected.md
+# 4. Review new.md; rejected jobs are in rejected.md
 ```
 
-`seen.bin` глобальный (`%USERPROFILE%\.upwork-parse-diff\seen.bin`), поэтому повторные заказы между прогонами не показываются; TTL — `--ttl-days 90`.
+`seen.bin` is global (`%USERPROFILE%\.upwork-parse-diff\seen.bin`), so repeat jobs across runs are not shown again; TTL is `--ttl-days 90`.

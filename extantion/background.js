@@ -271,14 +271,23 @@ async function advance(total, index, wasError) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "start") {
     (async () => {
-      const res = await fetch(chrome.runtime.getURL("urls.json"));
-      const urls = await res.json();
-      const state = await chrome.storage.local.get("running");
+      const state = await chrome.storage.local.get(["urls", "index", "running"]);
       if (!running && !state.running) {
         running = true;
-        await chrome.storage.local.set({ urls, index: 0, runStamp: makeRunStamp(), running: true });
-        broadcast({ action: "progress", index: 0, total: urls.length, status: "Scraping..." });
-        processNext();
+        const oldUrls = state.urls || [];
+        const oldIndex = state.index || 0;
+        // Resume unfinished run (after error/stop) from saved index; otherwise start fresh.
+        if (oldUrls.length > 0 && oldIndex > 0 && oldIndex < oldUrls.length) {
+          await chrome.storage.local.set({ running: true });
+          broadcast({ action: "progress", index: oldIndex, total: oldUrls.length, status: "Scraping..." });
+          processNext();
+        } else {
+          const res = await fetch(chrome.runtime.getURL("urls.json"));
+          const urls = await res.json();
+          await chrome.storage.local.set({ urls, index: 0, runStamp: makeRunStamp(), running: true });
+          broadcast({ action: "progress", index: 0, total: urls.length, status: "Scraping..." });
+          processNext();
+        }
       }
     })();
     sendResponse({ ok: true });

@@ -25,7 +25,9 @@ import java.util.stream.Stream;
  *                 пользователь помечает ❌ (не интересно) / ✅ (откликнулся) —
  *                 помеченные уходят в history.md и навсегда исчезают из new.md,
  *                 даже если заказ снова попадётся в дампах;
- *   history.md  — всё разрешённое вручную (❌/✅ + дата);
+ *                 колонка причина — свободная заметка (почему отказ/отклик):
+ *                 сохраняется между прогонами и уходит с заказом в history.md;
+ *   history.md  — всё разрешённое вручную (❌/✅ + причина + дата);
  *   rejected.md — автоотсев текущего прогона (❌ проставляет парсер автоматически).
  * Неразмеченные строки new.md переносятся между прогонами и дополняются
  * подходящими заказами из новых дампов. Учёт «новых/повторных» — seen.bin.
@@ -252,14 +254,18 @@ public final class Main {
             resolvedUids.add(h.tile().uid());
         }
         Map<String, JobTile> openTiles = new LinkedHashMap<>();
+        Map<String, String> openReasons = new LinkedHashMap<>();
         String today = java.time.LocalDate.now().toString();
         for (MarkedRow row : prevRows) {
             JobTile tile = pending.containsKey(row.tile().uid()) ? pending.get(row.tile().uid()) : row.tile();
             if (row.mark() == null) {
                 openTiles.putIfAbsent(tile.uid(), tile);
+                if (!row.reason().isEmpty()) {
+                    openReasons.put(tile.uid(), row.reason());
+                }
             } else {
                 if (resolvedUids.add(tile.uid())) {
-                    resolved.add(0, new HistoryRow(row.mark(), tile, today));
+                    resolved.add(0, new HistoryRow(row.mark(), row.reason(), tile, today));
                 }
             }
         }
@@ -289,7 +295,7 @@ public final class Main {
 
         // ---- 7. new.md — открытые заказы (mark пустой, ждёт ❌/✅) ----
         try {
-            writeNewMd(outDir, openTiles.values());
+            writeNewMd(outDir, openTiles.values(), openReasons);
         } catch (IOException e) {
             System.err.println("CRITICAL ERROR: не удалось записать new.md: " + e.getMessage());
             return 2;
@@ -433,7 +439,7 @@ public final class Main {
         return parent != null ? parent : dumpFolder;
     }
 
-    private void writeNewMd(Path outDir, Collection<JobTile> tiles) throws IOException {
+    private void writeNewMd(Path outDir, Collection<JobTile> tiles, Map<String, String> reasons) throws IOException {
         List<JobTile> sorted = new ArrayList<>(tiles);
         sorted.sort(Comparator.comparingLong(JobTile::postedMillis).reversed());
         Path out = outDir.resolve(NEW_MD);
@@ -446,14 +452,16 @@ public final class Main {
             w.println("Пометка в первой колонке: " + MARK_REJECT + " — не интересно, "
                     + MARK_APPLIED + " — откликнулся. Помеченные уходят в history.md "
                     + "и больше не появляются здесь.");
+            w.println("Колонка причина — свободная заметка (почему отказ/отклик): "
+                    + "сохраняется между прогонами и уходит с заказом в history.md.");
             w.println();
-            w.println("| mark | uid | title | url | type | budget | proposals | rating | spent | posted | query |");
-            w.println("|------|-----|-------|-----|------|--------|-----------|--------|-------|--------|-------|");
+            w.println("| mark | причина | uid | title | url | type | budget | proposals | rating | spent | posted | query |");
+            w.println("|------|---------|-----|-------|-----|------|--------|-----------|--------|-------|--------|-------|");
             if (sorted.isEmpty()) {
-                w.println("| | — | **открытых заказов нет** | | | | | | | | |");
+                w.println("| |  | — | **открытых заказов нет** | | | | | | | | | |");
             } else {
                 for (JobTile t : sorted) {
-                    w.println("|  | " + rowCells(t) + " |");
+                    w.println("|  | " + md(reasons.getOrDefault(t.uid(), "")) + " | " + rowCells(t) + " |");
                 }
             }
         }
@@ -466,13 +474,13 @@ public final class Main {
             w.println();
             w.println(MARK_REJECT + " — отклонено вручную · " + MARK_APPLIED + " — откликнуто");
             w.println();
-            w.println("| mark | uid | title | url | type | budget | proposals | rating | spent | posted | query | resolved |");
-            w.println("|------|-----|-------|-----|------|--------|-----------|--------|-------|--------|-------|----------|");
+            w.println("| mark | причина | uid | title | url | type | budget | proposals | rating | spent | posted | query | resolved |");
+            w.println("|------|---------|-----|-------|-----|------|--------|-----------|--------|-------|--------|-------|----------|");
             if (rows.isEmpty()) {
-                w.println("| | — | **история пуста** | | | | | | | | | |");
+                w.println("| |  | — | **история пуста** | | | | | | | | | | |");
             } else {
                 for (HistoryRow h : rows) {
-                    w.println("| " + h.mark() + " | " + rowCells(h.tile()) + " | " + md(h.resolved()) + " |");
+                    w.println("| " + h.mark() + " | " + md(h.reason()) + " | " + rowCells(h.tile()) + " | " + md(h.resolved()) + " |");
                 }
             }
         }
@@ -528,14 +536,16 @@ public final class Main {
 
     // ================= рабочее состояние дашборда =================
 
-    private record MarkedRow(String mark, JobTile tile, String resolved) {}
+    private record MarkedRow(String mark, String reason, JobTile tile, String resolved) {}
 
-    private record HistoryRow(String mark, JobTile tile, String resolved) {}
+    private record HistoryRow(String mark, String reason, JobTile tile, String resolved) {}
 
     /**
-     * Разобрать markdown-таблицу (new.md / history.md): mark (null / ❌ / ✅), тайл,
-     * дата resolution (для history.md). Пометка ищется по всем ячейкам — пользователь
-     * может поставить ❌ в любую. Файла нет / пустой — пустой список.
+     * Разобрать markdown-таблицу (new.md / history.md): mark (null / ❌ / ✅), причина
+     * (колонка после mark; в старых файлах без неё — пустая), тайл, дата resolution
+     * (для history.md). Пометка ищется по всем ячейкам — пользователь может поставить
+     * ❌ в любую. Файла нет / пустой — пустой список. Поддерживаются оба формата:
+     * со колонкой причина и старый (11 колонок).
      */
     private static List<MarkedRow> parseMarkedRows(Path mdFile) {
         List<MarkedRow> rows = new ArrayList<>();
@@ -543,6 +553,7 @@ public final class Main {
             return rows;
         }
         try {
+            boolean withReason = false;
             for (String line : Files.readAllLines(mdFile, StandardCharsets.UTF_8)) {
                 String trimmed = line.trim();
                 if (!trimmed.startsWith("|") || trimmed.contains("---")) {
@@ -551,10 +562,16 @@ public final class Main {
                 String[] cells = Arrays.stream(trimmed.split("\\|", -1))
                         .map(String::trim)
                         .toArray(String[]::new);
-                // cells[0] и cells[last] пустые (края таблицы); данных в new.md 11 ячеек,
-                // в history.md — 12 (последняя — resolved).
-                if (cells.length - 2 < 11 || cells[2].equals("uid")) {
-                    continue; // шапка/разделитель/не таблица
+                // cells[0] и cells[last] пустые (края таблицы). Шапка:
+                // mark | [причина |] uid | ... — определяет формат файла.
+                if (cells.length > 3 && (cells[2].equals("uid") || cells[3].equals("uid"))) {
+                    withReason = cells[2].equals("причина");
+                    continue;
+                }
+                int off = withReason ? 1 : 0;
+                // данных в new.md 11 ячеек (+1 с причиной), в history.md — 12 (+1).
+                if (cells.length - 2 < 11 + off) {
+                    continue; // короткая строка / не таблица
                 }
                 String mark = null;
                 for (String c : cells) {
@@ -567,15 +584,16 @@ public final class Main {
                         break;
                     }
                 }
+                String reason = withReason ? unmd(cells[2]) : "";
                 JobTile tile = new JobTile(
-                        unmd(cells[2]), unmd(cells[3]), unmd(cells[4]), unmd(cells[5]),
-                        unmd(cells[6]), unmd(cells[7]), unmd(cells[8]), unmd(cells[9]),
-                        true, 0, unmd(cells[10]), unmd(cells[11]));
+                        unmd(cells[2 + off]), unmd(cells[3 + off]), unmd(cells[4 + off]), unmd(cells[5 + off]),
+                        unmd(cells[6 + off]), unmd(cells[7 + off]), unmd(cells[8 + off]), unmd(cells[9 + off]),
+                        true, 0, unmd(cells[10 + off]), unmd(cells[11 + off]));
                 if (tile.uid().equals("—")) {
                     continue; // заглушка «пусто»
                 }
-                String resolved = cells.length - 2 >= 12 ? unmd(cells[12]) : "";
-                rows.add(new MarkedRow(mark, tile, resolved));
+                String resolved = cells.length - 2 >= 12 + off ? unmd(cells[12 + off]) : "";
+                rows.add(new MarkedRow(mark, reason, tile, resolved));
             }
         } catch (IOException e) {
             System.err.println("WARNING: не удалось прочитать " + mdFile.getFileName()
@@ -588,7 +606,7 @@ public final class Main {
         List<HistoryRow> rows = new ArrayList<>();
         for (MarkedRow r : parseMarkedRows(historyFile)) {
             rows.add(new HistoryRow(
-                    r.mark() != null ? r.mark() : MARK_REJECT, r.tile(), r.resolved()));
+                    r.mark() != null ? r.mark() : MARK_REJECT, r.reason(), r.tile(), r.resolved()));
         }
         return rows;
     }

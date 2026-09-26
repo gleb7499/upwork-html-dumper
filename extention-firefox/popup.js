@@ -48,10 +48,15 @@ function setRunning(isRunning) {
 }
 
 async function init() {
-  const state = await chrome.storage.local.get(["urls", "index", "running"]);
+  const state = await chrome.storage.local.get(["urls", "index", "running", "logs"]);
   const total = (state.urls || []).length;
   const index = state.index || 0;
   render(index, total);
+  if (state.logs && state.logs.length) {
+    logEl.textContent = state.logs.join("\n") + "\n";
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  log(`init: index=${index} total=${total} running=${!!state.running}`);
   if (state.running) {
     setRunning(true);
     setStatus("Scraping...", "running");
@@ -89,6 +94,10 @@ dumpBtn.addEventListener("click", () => {
 });
 
 chrome.runtime.onMessage.addListener((message) => {
+  if (message.action === "log") {
+    log(message.msg);
+    return;
+  }
   log(`recv ${brief(message)}`);
   if (message.action === "progress") {
     setRunning(true);
@@ -107,8 +116,6 @@ chrome.runtime.onMessage.addListener((message) => {
     setStatus(`Ошибка скачивания: ${message.error}`, "error");
   } else if (message.action === "reset") {
     resetUi();
-  } else if (message.action === "log") {
-    // handled by log() above
   }
 });
 

@@ -343,6 +343,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "start") {
     (async () => {
       const state = await chrome.storage.local.get(["urls", "index", "running"]);
+      // A leftover running:true from a dead run (browser/event page died
+      // mid-run) would block Start forever — clear it when this background
+      // instance holds no active run or tab.
+      if (state.running && !running && !currentTabId) {
+        logEvent("stale running flag found, clearing");
+        await chrome.storage.local.set({ running: false });
+        state.running = false;
+      }
       if (!running && !state.running) {
         running = true;
         const oldUrls = state.urls || [];

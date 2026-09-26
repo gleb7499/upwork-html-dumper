@@ -50,6 +50,12 @@ function detectBlock() {
   return null;
 }
 
+function ping() {
+  try {
+    chrome.runtime.sendMessage({ action: "ping" });
+  } catch (e) {}
+}
+
 async function scrollAndCapture() {
   const earlyBlock = detectBlock();
   if (earlyBlock) {
@@ -60,6 +66,8 @@ async function scrollAndCapture() {
   // The Nuxt app renders results asynchronously; through a slow proxy the
   // markup can stay at "0 jobs found" for a while. Wait until the jobs
   // count renders (bounded), then scroll to load lazy content.
+  // The background event page idles out after ~30s, so ping it regularly
+  // while waiting — otherwise it sleeps and our htmlReady is lost.
   const resultsReady = () => {
     const el = document.querySelector('[data-test="JobsCountQA"]');
     const t = el ? el.textContent : "";
@@ -67,12 +75,14 @@ async function scrollAndCapture() {
   };
   for (let i = 0; i < 45; i++) {
     if (resultsReady()) break;
+    if (i % 5 === 0) ping();
     await sleep(1000);
   }
 
   for (let i = 0; i < 3; i++) {
     window.scrollTo(0, document.body.scrollHeight);
     await sleep(2000);
+    ping();
   }
 
   await sleep(3000);

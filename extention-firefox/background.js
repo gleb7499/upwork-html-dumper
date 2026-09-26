@@ -260,6 +260,9 @@ async function finishTab(tabId) {
     logEvent(`tab ${tabId} close failed: ${(e && e.message) || e}`);
   }
   currentTabId = null;
+  try {
+    await chrome.storage.local.set({ currentTabId: null });
+  } catch (e) {}
 }
 
 async function processNext() {
@@ -292,6 +295,9 @@ async function processNext() {
     return;
   }
   currentTabId = tab.id;
+  // Persist: the event page may sleep mid-run; on wake the in-memory id is
+  // gone, so tab matching must fall back to storage.
+  await chrome.storage.local.set({ currentTabId: tab.id });
   logEvent(`tab created: id=${tab.id}`);
 
   tabTimeout = setTimeout(async () => {
@@ -301,15 +307,26 @@ async function processNext() {
   }, TAB_TIMEOUT_MS);
 }
 
+async function getCurrentTabId() {
+  if (currentTabId) return currentTabId;
+  try {
+    const s = await chrome.storage.local.get("currentTabId");
+    return typeof s.currentTabId === "number" ? s.currentTabId : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 async function failRun(reason, url) {
   running = false;
   if (tabTimeout) { clearTimeout(tabTimeout); tabTimeout = null; }
   if (delayTimeout) { clearTimeout(delayTimeout); delayTimeout = null; }
-  if (currentTabId) {
-    try { await chrome.tabs.remove(currentTabId); } catch (e) {}
-    currentTabId = null;
+  const tabId = await getCurrentTabId();
+  if (tabId) {
+    try { await chrome.tabs.remove(tabId); } catch (e) {}
   }
-  await chrome.storage.local.set({ running: false });
+  currentTabId = null;
+  await chrome.storage.local.set({ running: false, currentTabId: null });
   broadcast({ action: "error", error: reason, url });
   chrome.notifications.create("dump-error", {
     type: "basic",
@@ -384,13 +401,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         clearTimeout(delayTimeout);
         delayTimeout = null;
       }
-      if (currentTabId) {
+      const tabId = await getCurrentTabId();
+      if (tabId) {
         try {
-          await chrome.tabs.remove(currentTabId);
+          await chrome.tabs.remove(tabId);
         } catch (e) {}
         currentTabId = null;
       }
-      await chrome.storage.local.set({ running: false });
+      await chrome.storage.local.set({ running: false, currentTabId: null });
       broadcast({ action: "stopped" });
     })();
     sendResponse({ ok: true });
@@ -408,13 +426,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         clearTimeout(delayTimeout);
         delayTimeout = null;
       }
-      if (currentTabId) {
+      const tabId = await getCurrentTabId();
+      if (tabId) {
         try {
-          await chrome.tabs.remove(currentTabId);
+          await chrome.tabs.remove(tabId);
         } catch (e) {}
         currentTabId = null;
       }
-      await chrome.storage.local.set({ urls: [], index: 0, running: false, logs: [] });
+      await chrome.storage.local.set({ urls: [], index: 0, running: false, currentTabId: null, logs: [] });
       logEvent("reset: state cleared");
       broadcast({ action: "reset" });
     })();
@@ -432,8 +451,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message.action === "pageError" && sender.tab && sender.tab.id === currentTabId) {
+  if (message.action === "ping") {
+    sendResponse({ ok: true });
+    return;
+  }
+
+  if (message.action === "pageError" && sender.tab) {
     (async () => {
+      const expected = await getCurrentTabId();
+      if (sender.tab.id !== expected) return;
       const state = await chrome.storage.local.get(["urls", "index"]);
       const urls = state.urls || [];
       const index = state.index || 0;
@@ -442,8 +468,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return;
   }
 
-  if (message.action === "htmlReady" && sender.tab && sender.tab.id === currentTabId) {
+  if (message.action === "htmlReady" && sender.tab) {
     (async () => {
+      const expected = await getCurrentTabId();
+      if (sender.tab.id !== expected) return;
       const state = await chrome.storage.local.get(["urls", "index"]);
       let urls = state.urls || [];
       const index = state.index || 0;

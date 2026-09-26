@@ -277,7 +277,20 @@ async function processNext() {
   broadcast({ action: "progress", index, total: urls.length, status: "Scraping..." });
   logEvent(`open tab for [${index + 1}/${urls.length}] ${url}`);
 
-  const tab = await chrome.tabs.create({ url, active: false });
+  // tabs.create can hang forever in Firefox (e.g. on a busy/stuck browser)
+  // — race it against a timeout and skip to the next URL on failure.
+  let tab;
+  try {
+    tab = await withTimeout(
+      chrome.tabs.create({ url, active: false }),
+      20000,
+      "tabs.create"
+    );
+  } catch (e) {
+    logEvent(`tabs.create FAILED [${index + 1}]: ${(e && e.message) || e}`);
+    await failRun(`Не удалось создать вкладку: ${(e && e.message) || e}`, url);
+    return;
+  }
   currentTabId = tab.id;
   logEvent(`tab created: id=${tab.id}`);
 

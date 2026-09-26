@@ -6,6 +6,20 @@ const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
 const dumpBtn = document.getElementById("dumpBtn");
 const resetBtn = document.getElementById("resetBtn");
+const logEl = document.getElementById("log");
+
+function log(msg) {
+  const t = new Date().toLocaleTimeString();
+  logEl.textContent += `[${t}] ${msg}\n`;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function brief(m) {
+  if (!m) return String(m);
+  const copy = { ...m };
+  if (copy.html !== undefined) copy.html = `<${copy.html.length} chars>`;
+  return JSON.stringify(copy);
+}
 
 function resetUi() {
   setRunning(false);
@@ -75,6 +89,7 @@ dumpBtn.addEventListener("click", () => {
 });
 
 chrome.runtime.onMessage.addListener((message) => {
+  log(`recv ${brief(message)}`);
   if (message.action === "progress") {
     setRunning(true);
     render(message.index, message.total);
@@ -92,6 +107,8 @@ chrome.runtime.onMessage.addListener((message) => {
     setStatus(`Ошибка скачивания: ${message.error}`, "error");
   } else if (message.action === "reset") {
     resetUi();
+  } else if (message.action === "log") {
+    // handled by log() above
   }
 });
 

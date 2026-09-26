@@ -244,7 +244,10 @@ async function finishTab(tabId) {
   }
   try {
     await chrome.tabs.remove(tabId);
-  } catch (e) {}
+    broadcast({ action: "log", msg: `tab ${tabId} closed` });
+  } catch (e) {
+    broadcast({ action: "log", msg: `tab ${tabId} close failed: ${(e && e.message) || e}` });
+  }
   currentTabId = null;
 }
 
@@ -261,12 +264,15 @@ async function processNext() {
 
   const url = urls[index];
   broadcast({ action: "progress", index, total: urls.length, status: "Scraping..." });
+  broadcast({ action: "log", msg: `open tab for [${index + 1}/${urls.length}] ${url}` });
 
   const tab = await chrome.tabs.create({ url, active: false });
   currentTabId = tab.id;
+  broadcast({ action: "log", msg: `tab created: id=${tab.id}` });
 
   tabTimeout = setTimeout(async () => {
     console.error(`Timeout: tab did not respond in ${TAB_TIMEOUT_MS / 1000}s, url: ${url}`);
+    broadcast({ action: "log", msg: `timeout ${TAB_TIMEOUT_MS / 1000}s waiting for tab ${tab.id}` });
     await failRun(`Таймаут: вкладка не ответила за ${TAB_TIMEOUT_MS / 1000}с`, url);
   }, TAB_TIMEOUT_MS);
 }
@@ -305,6 +311,7 @@ async function advance(total, index, wasError) {
   }
 
   const delay = 5000 + Math.random() * 3000;
+  broadcast({ action: "log", msg: `next in ${(delay / 1000).toFixed(1)}s (${nextIndex + 1}/${total})` });
   delayTimeout = setTimeout(processNext, delay);
 }
 
@@ -408,15 +415,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       let urls = state.urls || [];
       const index = state.index || 0;
       const tabId = sender.tab.id;
+      broadcast({ action: "log", msg: `htmlReady [${index + 1}/${urls.length}] ${message.html.length} chars, tab=${tabId}` });
       try {
         const extra = discoverExtraPages(urls[index], message.html);
         if (extra.length > 0) {
+          broadcast({ action: "log", msg: `+${extra.length} extra pages from [${index + 1}]` });
           urls = urls.slice(0, index + 1).concat(extra, urls.slice(index + 1));
         }
         await downloadHtml(index, urls[index], message.html);
+        broadcast({ action: "log", msg: `saved [${index + 1}]` });
         await chrome.storage.local.set({ urls });
       } catch (e) {
         console.error("Download failed:", e);
+        broadcast({ action: "log", msg: `download FAILED [${index + 1}]: ${(e && e.message) || e}` });
         broadcast({ action: "downloadError", error: String((e && e.message) || e) });
       }
       await finishTab(tabId);

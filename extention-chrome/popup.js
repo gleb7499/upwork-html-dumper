@@ -5,6 +5,18 @@ const statusDot = document.getElementById("statusDot");
 const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
 const dumpBtn = document.getElementById("dumpBtn");
+const resetBtn = document.getElementById("resetBtn");
+
+function resetUi() {
+  setRunning(false);
+  render(0, 0);
+  setStatus("Waiting...", "");
+}
+
+resetBtn.addEventListener("click", () => {
+  chrome.runtime.sendMessage({ action: "reset" });
+  resetUi();
+});
 
 function render(index, total) {
   progressEl.textContent = total > 0 ? `${index} / ${total}` : "- / -";
@@ -76,6 +88,8 @@ chrome.runtime.onMessage.addListener((message) => {
   } else if (message.action === "error") {
     setRunning(false);
     setStatus(`Ошибка: ${message.error}`, "error");
+  } else if (message.action === "reset") {
+    resetUi();
   }
 });
 

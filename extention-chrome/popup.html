@@ -118,6 +118,32 @@
       0%, 100% { opacity: 1; }
       50% { opacity: 0.3; }
     }
+    body {
+      position: relative;
+    }
+    .body {
+      padding-bottom: 40px;
+    }
+    #resetBtn {
+      position: absolute;
+      right: 12px;
+      bottom: 10px;
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      background: #e2e5e9;
+      color: #5f6368;
+      font-size: 17px;
+      line-height: 1;
+      padding: 0;
+      flex: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #resetBtn:hover:not(:disabled) {
+      background: #d0d4d9;
+    }
   </style>
 </head>
 <body>
@@ -142,6 +168,7 @@
       <span id="status">Waiting...</span>
     </div>
   </div>
+  <button id="resetBtn" title="Reset progress and start fresh">&#8635;</button>
   <script src="popup.js"></script>
 </body>
 </html>

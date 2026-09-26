@@ -120,12 +120,17 @@ function discoverExtraPages(url, html) {
 
 async function downloadHtml(index, url, html) {
   const cleaned = cleanHtml(html);
-  const dataUrl = "data:text/html;charset=utf-8," + encodeURIComponent(cleaned);
-  const downloadId = await chrome.downloads.download({
-    url: dataUrl,
-    filename: await makeFilename(index, url),
-    saveAs: false
-  });
+  const blobUrl = URL.createObjectURL(new Blob([cleaned], { type: "text/html" }));
+  let downloadId;
+  try {
+    downloadId = await chrome.downloads.download({
+      url: blobUrl,
+      filename: await makeFilename(index, url),
+      saveAs: false
+    });
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+  }
   await chrome.storage.local.set({ lastDownloadId: downloadId });
   return downloadId;
 }
@@ -162,12 +167,17 @@ async function dumpActiveTab() {
   }
   const keyword = new URL(tab.url).searchParams.get("q");
   const name = sanitizeFileName(keyword || tab.title).slice(0, 80);
-  const dataUrl = "data:text/html;charset=utf-8," + encodeURIComponent(cleanHtml(html));
-  const downloadId = await chrome.downloads.download({
-    url: dataUrl,
-    filename: `${name}.html`,
-    saveAs: false
-  });
+  const blobUrl = URL.createObjectURL(new Blob([cleanHtml(html)], { type: "text/html" }));
+  let downloadId;
+  try {
+    downloadId = await chrome.downloads.download({
+      url: blobUrl,
+      filename: `${name}.html`,
+      saveAs: false
+    });
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+  }
   await chrome.storage.local.set({ lastDownloadId: downloadId });
   return { ok: true };
 }
@@ -182,7 +192,7 @@ async function finish(total) {
   broadcast({ action: "done", total });
   chrome.notifications.create("dump-done", {
     type: "basic",
-    iconUrl: "icons/icon128.png",
+    iconUrl: chrome.runtime.getURL("icons/icon128.png"),
     title: "Upwork HTML Dumper",
     message: `Готово: обработано ${total} стр. Нажми, чтобы открыть папку.`
   });
@@ -243,7 +253,7 @@ async function failRun(reason, url) {
   broadcast({ action: "error", error: reason, url });
   chrome.notifications.create("dump-error", {
     type: "basic",
-    iconUrl: "icons/icon128.png",
+    iconUrl: chrome.runtime.getURL("icons/icon128.png"),
     title: "Upwork HTML Dumper — ошибка",
     message: `Процесс прерван: ${reason}${url ? ". URL: " + url : ""}`
   });
@@ -313,6 +323,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       await chrome.storage.local.set({ running: false });
       broadcast({ action: "stopped" });
+    })();
+    sendResponse({ ok: true });
+    return;
+  }
+
+  if (message.action === "reset") {
+    (async () => {
+      running = false;
+      if (tabTimeout) {
+        clearTimeout(tabTimeout);
+        tabTimeout = null;
+      }
+      if (delayTimeout) {
+        clearTimeout(delayTimeout);
+        delayTimeout = null;
+      }
+      if (currentTabId) {
+        try {
+          await chrome.tabs.remove(currentTabId);
+        } catch (e) {}
+        currentTabId = null;
+      }
+      await chrome.storage.local.set({ urls: [], index: 0, running: false });
+      broadcast({ action: "reset" });
     })();
     sendResponse({ ok: true });
     return;

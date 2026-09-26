@@ -88,6 +88,8 @@ chrome.runtime.onMessage.addListener((message) => {
   } else if (message.action === "error") {
     setRunning(false);
     setStatus(`Ошибка: ${message.error}`, "error");
+  } else if (message.action === "downloadError") {
+    setStatus(`Ошибка скачивания: ${message.error}`, "error");
   } else if (message.action === "reset") {
     resetUi();
   }

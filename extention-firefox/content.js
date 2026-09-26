@@ -57,6 +57,19 @@ async function scrollAndCapture() {
     return;
   }
 
+  // The Nuxt app renders results asynchronously; through a slow proxy the
+  // markup can stay at "0 jobs found" for a while. Wait until the jobs
+  // count renders (bounded), then scroll to load lazy content.
+  const resultsReady = () => {
+    const el = document.querySelector('[data-test="JobsCountQA"]');
+    const t = el ? el.textContent : "";
+    return /[1-9][\d,]*\s+jobs?/i.test(t);
+  };
+  for (let i = 0; i < 45; i++) {
+    if (resultsReady()) break;
+    await sleep(1000);
+  }
+
   for (let i = 0; i < 3; i++) {
     window.scrollTo(0, document.body.scrollHeight);
     await sleep(2000);

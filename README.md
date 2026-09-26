@@ -4,7 +4,7 @@ Pipeline for selecting Upwork jobs: search URLs → page dumps → parser with a
 
 ## How it works
 
-1. **`extention-chrome/`** — browser extension (Chrome MV3, "Upwork HTML Dumper").
+1. **`extention-firefox/`** — browser extension (Firefox MV3, "Upwork HTML Dumper").
    Opens search result pages from the URL list in `urls.json` and saves HTML dumps to a folder.
 2. **`upwork-parse-diff/`** — offline parser (Java 21, jsoup; no network, no database).
    Reads a folder of dumps and outputs **only new** jobs (dedup by uid via a global `seen.bin`):
@@ -32,8 +32,7 @@ Concrete values and rules live only in `rules/правила_отбора.md`, a
 ## Structure
 
 ```
-├── extention-chrome/   # Chrome extension: dumps Upwork search results per urls.json
-├── extention-firefox/  # same extension for Firefox (own manifest.json)
+├── extention-firefox/  # Firefox extension: dumps Upwork search results per urls.json
 ├── rules/              # niches, query syntax, selection rules
 ├── upwork-parse-diff/  # parser sources (Maven, Java 21)
 └── upwork-parse-dist/  # packaged parser distribution (jar + bat + build.sh)

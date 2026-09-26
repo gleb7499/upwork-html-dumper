@@ -1,4 +1,6 @@
-const TAB_TIMEOUT_MS = 30000;
+const TAB_TIMEOUT_MS = 90000;
+const DOWNLOAD_TIMEOUT_MS = 25000;
+const KEYWORD_MAX_LEN = 60;
 const DEFAULT_PER_PAGE = 50;
 
 let currentTabId = null;
@@ -51,13 +53,33 @@ function makeRunStamp() {
 }
 
 async function makeFilename(index, url) {
-  const keyword = extractKeyword(url);
+  const keyword = extractKeyword(url).slice(0, KEYWORD_MAX_LEN);
   const page = getPageNumber(url);
   const state = await chrome.storage.local.get("runStamp");
   const runStamp = state.runStamp || makeRunStamp();
   const suffix = page > 1 ? `_p${page}` : "";
   return `${runStamp}/${keyword}${suffix}.html`;
 }
+
+// Firefox sometimes never settles downloads.download (hung promise) — race
+// it against a timeout so the scraping loop always continues.
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label}: timeout after ${ms}ms`)), ms)
+    )
+  ]);
+}
+
+// Async download failures (bad path, source error) surface here, not as a
+// rejected promise — report them to the popup instead of dying silently.
+chrome.downloads.onChanged.addListener((delta) => {
+  if (delta.error && delta.error.current) {
+    console.error("Download failed:", delta.error.current, delta.id);
+    broadcast({ action: "downloadError", error: String(delta.error.current) });
+  }
+});
 
 // Text-level cleanup only (no DOM parsing): strips dead weight after JS
 // has already inlined all data into the markup.
@@ -123,11 +145,15 @@ async function downloadHtml(index, url, html) {
   const blobUrl = URL.createObjectURL(new Blob([cleaned], { type: "text/html" }));
   let downloadId;
   try {
-    downloadId = await chrome.downloads.download({
-      url: blobUrl,
-      filename: await makeFilename(index, url),
-      saveAs: false
-    });
+    downloadId = await withTimeout(
+      chrome.downloads.download({
+        url: blobUrl,
+        filename: await makeFilename(index, url),
+        saveAs: false
+      }),
+      DOWNLOAD_TIMEOUT_MS,
+      "downloads.download"
+    );
   } finally {
     setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
   }
@@ -170,11 +196,15 @@ async function dumpActiveTab() {
   const blobUrl = URL.createObjectURL(new Blob([cleanHtml(html)], { type: "text/html" }));
   let downloadId;
   try {
-    downloadId = await chrome.downloads.download({
-      url: blobUrl,
-      filename: `${name}.html`,
-      saveAs: false
-    });
+    downloadId = await withTimeout(
+      chrome.downloads.download({
+        url: blobUrl,
+        filename: `${name}.html`,
+        saveAs: false
+      }),
+      DOWNLOAD_TIMEOUT_MS,
+      "downloads.download"
+    );
   } finally {
     setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
   }
@@ -387,9 +417,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         await chrome.storage.local.set({ urls });
       } catch (e) {
         console.error("Download failed:", e);
+        broadcast({ action: "downloadError", error: String((e && e.message) || e) });
       }
       await finishTab(tabId);
       await advance(urls.length, index, false);
     })();
   }
 });
+

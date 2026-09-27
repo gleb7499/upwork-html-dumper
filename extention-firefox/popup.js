@@ -34,13 +34,16 @@ function setRunning(isRunning) {
 }
 
 async function init() {
-  const state = await chrome.storage.local.get(["urls", "index", "running"]);
+  const state = await chrome.storage.local.get(["urls", "index", "running", "lastError"]);
   const total = (state.urls || []).length;
   const index = state.index || 0;
   render(index, total);
   if (state.running) {
     setRunning(true);
     setStatus("Scraping...", "running");
+  } else if (state.lastError) {
+    setRunning(false);
+    setStatus(`Ошибка: ${state.lastError}`, "error");
   } else if (total > 0 && index >= total) {
     setRunning(false);
     setStatus("Done", "done");

@@ -215,7 +215,7 @@ async function dumpActiveTab() {
 // Persist run log to storage (readable from disk) and mirror to popup.
 async function logEvent(msg) {
   const line = `[${new Date().toLocaleTimeString()}] ${msg}`;
-  logEvent(line);
+  console.log(line);
   try {
     const state = await chrome.storage.local.get("logs");
     const logs = (state.logs || []).concat(line).slice(-500);
@@ -229,7 +229,7 @@ function broadcast(message) {
 
 async function finish(total) {
   running = false;
-  await chrome.storage.local.set({ running: false });
+  await chrome.storage.local.set({ running: false, lastError: null });
   broadcast({ action: "done", total });
   chrome.notifications.create("dump-done", {
     type: "basic",
@@ -303,7 +303,7 @@ async function processNext() {
   tabTimeout = setTimeout(async () => {
     console.error(`Timeout: tab did not respond in ${TAB_TIMEOUT_MS / 1000}s, url: ${url}`);
     logEvent(`timeout ${TAB_TIMEOUT_MS / 1000}s waiting for tab ${tab.id}`);
-    await failRun(`Таймаут: вкладка не ответила за ${TAB_TIMEOUT_MS / 1000}с`, url);
+    await skipPage(`Таймаут: вкладка не ответила за ${TAB_TIMEOUT_MS / 1000}с`);
   }, TAB_TIMEOUT_MS);
 }
 
@@ -317,6 +317,26 @@ async function getCurrentTabId() {
   }
 }
 
+// A single bad page (timeout, block, empty render) must not kill the whole
+// run: log it, close the tab, move to the next URL.
+async function skipPage(reason) {
+  if (tabTimeout) { clearTimeout(tabTimeout); tabTimeout = null; }
+  const state = await chrome.storage.local.get(["urls", "index"]);
+  const urls = state.urls || [];
+  const index = state.index || 0;
+  const url = urls[index];
+  logEvent(`skip [${index + 1}/${urls.length}]: ${reason}`);
+  await chrome.storage.local.set({ lastError: `Пропущена [${index + 1}/${urls.length}]: ${reason}` });
+  const tabId = await getCurrentTabId();
+  if (tabId) {
+    await finishTab(tabId);
+  } else {
+    currentTabId = null;
+    try { await chrome.storage.local.set({ currentTabId: null }); } catch (e) {}
+  }
+  await advance(urls.length, index, true);
+}
+
 async function failRun(reason, url) {
   running = false;
   if (tabTimeout) { clearTimeout(tabTimeout); tabTimeout = null; }
@@ -326,7 +346,7 @@ async function failRun(reason, url) {
     try { await chrome.tabs.remove(tabId); } catch (e) {}
   }
   currentTabId = null;
-  await chrome.storage.local.set({ running: false, currentTabId: null });
+  await chrome.storage.local.set({ running: false, currentTabId: null, lastError: reason + (url ? " — " + url : "") });
   broadcast({ action: "error", error: reason, url });
   chrome.notifications.create("dump-error", {
     type: "basic",
@@ -372,15 +392,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         running = true;
         const oldUrls = state.urls || [];
         const oldIndex = state.index || 0;
-        // Resume unfinished run (after error/stop) from saved index; otherwise start fresh.
-        if (oldUrls.length > 0 && oldIndex > 0 && oldIndex < oldUrls.length) {
-          await chrome.storage.local.set({ running: true });
+        // Resume unfinished run (after error/stop/block) from saved index;
+        // index == urls.length means the previous run finished — start fresh.
+        if (oldUrls.length > 0 && oldIndex < oldUrls.length) {
+          await chrome.storage.local.set({ running: true, lastError: null });
           broadcast({ action: "progress", index: oldIndex, total: oldUrls.length, status: "Scraping..." });
           processNext();
         } else {
           const res = await fetch(chrome.runtime.getURL("urls.json"));
           const urls = await res.json();
-          await chrome.storage.local.set({ urls, index: 0, runStamp: makeRunStamp(), running: true });
+          await chrome.storage.local.set({ urls, index: 0, runStamp: makeRunStamp(), running: true, lastError: null });
           broadcast({ action: "progress", index: 0, total: urls.length, status: "Scraping..." });
           processNext();
         }
@@ -433,7 +454,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         } catch (e) {}
         currentTabId = null;
       }
-      await chrome.storage.local.set({ urls: [], index: 0, running: false, currentTabId: null, logs: [] });
+      await chrome.storage.local.set({ urls: [], index: 0, running: false, currentTabId: null, logs: [], lastError: null });
       logEvent("reset: state cleared");
       broadcast({ action: "reset" });
     })();
@@ -456,14 +477,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return;
   }
 
+  if (message.action === "blocked" && sender.tab) {
+    (async () => {
+      const expected = await getCurrentTabId();
+      if (sender.tab.id !== expected) return;
+      if (tabTimeout) { clearTimeout(tabTimeout); tabTimeout = null; }
+      running = false;
+      const reason = message.error || "Обнаружена проверка Cloudflare";
+      // Tab stays open on purpose: the user solves the challenge there.
+      // index is NOT advanced — Start after that resumes from this same URL.
+      currentTabId = null;
+      await chrome.storage.local.set({ running: false, currentTabId: null, lastError: reason });
+      logEvent(`blocked, waiting for user: ${reason}`);
+      broadcast({ action: "error", error: reason });
+      try { await chrome.tabs.update(sender.tab.id, { active: true }); } catch (e) {}
+      chrome.notifications.create("dump-blocked", {
+        type: "basic",
+        iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+        title: "Upwork HTML Dumper — Cloudflare",
+        message: `${reason}. Пройди проверку в открывшейся вкладке, затем нажми Start — сбор продолжится с этой же страницы.`
+      });
+    })();
+    return;
+  }
+
   if (message.action === "pageError" && sender.tab) {
     (async () => {
       const expected = await getCurrentTabId();
       if (sender.tab.id !== expected) return;
-      const state = await chrome.storage.local.get(["urls", "index"]);
-      const urls = state.urls || [];
-      const index = state.index || 0;
-      await failRun(message.error || "Неизвестная ошибка страницы", urls[index]);
+      await skipPage(message.error || "Неизвестная ошибка страницы");
     })();
     return;
   }

@@ -381,8 +381,10 @@ public final class Main {
                 tile(true, "hourly", "20-30", "5-10", "4.9"), false);
         allOk &= filterCheck("оплата не подтверждена",
                 tile(false, "hourly", "20-30", "5-10", "4.9"), true);
-        allOk &= filterCheck("предложений 10-15 (верхняя граница > 14)",
-                tile(true, "fixed", "100", "10-15", "4.9"), true);
+        allOk &= filterCheck("предложений 15-20 (верхняя граница > 15)",
+                tile(true, "fixed", "100", "15-20", "4.9"), true);
+        allOk &= filterCheck("предложений 10-15 проходят (бакет Upwork)",
+                tile(true, "fixed", "100", "10-15", "4.9"), false);
         allOk &= filterCheck("предложений 5-10 проходят",
                 tile(true, "fixed", "100", "5-10", "4.9"), false);
         allOk &= filterCheck("предложения не указаны — на ручную проверку",

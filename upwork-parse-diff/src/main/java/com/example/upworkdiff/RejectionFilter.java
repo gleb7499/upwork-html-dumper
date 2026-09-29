@@ -12,7 +12,7 @@ import java.util.List;
  */
 public final class RejectionFilter {
 
-    private static final double MAX_PROPOSALS_UPPER = 14;
+    private static final double MAX_PROPOSALS_UPPER = 15;
     private static final double MIN_HOURLY_RATE = 15;
     private static final double MIN_FIXED_BUDGET = 50;
     private static final double MIN_RATING = 4.0;
@@ -26,7 +26,7 @@ public final class RejectionFilter {
             reasons.add("оплата не подтверждена");
         }
         if (!t.proposals().isEmpty() && upperBound(t.proposals()) > MAX_PROPOSALS_UPPER) {
-            reasons.add("предложений > 14");
+            reasons.add("предложений > 15");
         }
         if ("hourly".equals(t.type()) && !t.budget().isEmpty()
                 && lowerBound(t.budget()) < MIN_HOURLY_RATE) {
